@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import javax.swing.DefaultListModel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
@@ -30,18 +31,24 @@ import javax.swing.JScrollPane;
 import javax.swing.ListSelectionModel;
 import org.openstreetmap.josm.data.Bounds;
 import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.osm.search.SearchCompiler;
+import org.openstreetmap.josm.data.osm.search.SearchCompiler.Match;
+import org.openstreetmap.josm.data.osm.search.SearchParseError;
 import org.openstreetmap.josm.gui.ExtendedDialog;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.plugins.tracer.CombineTagsResolver;
 import org.openstreetmap.josm.plugins.tracer.TracerModule;
 import org.openstreetmap.josm.plugins.tracer.TracerRecord;
+import org.openstreetmap.josm.plugins.tracer.connectways.AreaPredicate;
 import org.openstreetmap.josm.plugins.tracer.connectways.EdNode;
 import org.openstreetmap.josm.plugins.tracer.connectways.EdObject;
 import org.openstreetmap.josm.plugins.tracer.connectways.EdWay;
 import org.openstreetmap.josm.plugins.tracer.connectways.LatLonSize;
+import org.openstreetmap.josm.plugins.tracer.connectways.RetraceUpdater;
 import org.openstreetmap.josm.plugins.tracer.connectways.WayEditor;
 import static org.openstreetmap.josm.tools.I18n.tr;
 import org.openstreetmap.josm.tools.ImageProvider;
+import org.openstreetmap.josm.tools.Pair;
 
 /**
  * Tracer module for the Czech ČÚZK ZABAGED topographic database.
@@ -56,6 +63,7 @@ public final class ZabagedModule extends TracerModule {
 
     private static final double oversizeInDataBoundsMeters = 5.0;
     private static final double automaticOsmDownloadMeters = 500.0;
+
 
     public ZabagedModule(boolean enabled) {
         moduleEnabled = enabled;
@@ -250,6 +258,59 @@ public final class ZabagedModule extends TracerModule {
             }
         }
 
+        // -----------------------------------------------------------------
+        // Retrace lookup
+        // -----------------------------------------------------------------
+
+        private Match buildRetraceMatch(ZabagedRecord rec) {
+            Map<String, String> keys = rec.getKeys();
+            String[] primaryKeys = {
+                "building", "highway", "railway", "waterway", "landuse",
+                "natural", "leisure", "amenity", "power", "aeroway",
+                "man_made", "historic", "boundary", "tourism", "military"
+            };
+            for (String key : primaryKeys) {
+                String val = keys.get(key);
+                if (val == null)
+                    continue;
+                String pattern = val.equals("*") ? key : (key + "=\"" + val + "\"");
+                try {
+                    return SearchCompiler.compile(pattern);
+                } catch (SearchParseError e) {
+                    System.out.println("ZabagedModule: failed to compile retrace pattern '" + pattern + "': " + e.getMessage());
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        private Pair<EdObject, Boolean> getObjectToRetrace(WayEditor editor, LatLon pos) {
+            Match retraceMatch = buildRetraceMatch(zabagedRecord());
+            if (retraceMatch == null)
+                return new Pair<>(null, false);
+
+            AreaPredicate filter = new AreaPredicate(retraceMatch);
+            Set<EdObject> areas = editor.useNonEditedAreasContainingPoint(pos, filter);
+
+            boolean multiple = false;
+            EdObject found = null;
+            for (EdObject area : areas) {
+                if (area.isWay())
+                    System.out.println("Retrace candidate EdWay: " + Long.toString(area.getUniqueId()));
+                else if (area.isMultipolygon())
+                    System.out.println("Retrace candidate EdMultipolygon: " + Long.toString(area.getUniqueId()));
+
+                if (found == null)
+                    found = area;
+                else
+                    multiple = true;
+            }
+
+            if (multiple)
+                return new Pair<>(null, true);
+            return new Pair<>(found, false);
+        }
+
         // --- Polygon tracing (uses full TracerRecord pipeline) ---
 
         private EdObject tracePolygon(WayEditor editor, ZabagedRecord rec, ZabagedFeature feature) {
@@ -260,7 +321,31 @@ public final class ZabagedModule extends TracerModule {
                 return null;
             }
 
-            // Check ctrl: if fresh trace requested, skip retrace
+            // Look for existing object to retrace
+            EdObject retrace_object = null;
+            if (m_performRetrace) {
+                Pair<EdObject, Boolean> repl = getObjectToRetrace(editor, m_pos);
+                retrace_object = repl.a;
+                boolean ambiguous_retrace = repl.b;
+
+                if (ambiguous_retrace) {
+                    postTraceNotifications().add(tr("Multiple existing ZABAGED polygons found, retrace is not possible."));
+                    return null;
+                }
+            }
+
+            // Shift = tags-only update
+            if (m_updateTagsOnly) {
+                if (retrace_object == null) {
+                    postTraceNotifications().add(tr("No existing ZABAGED polygon found, tags only update is not possible."));
+                    return null;
+                }
+                if (!tagTracedObject(retrace_object, rec))
+                    return null;
+                return retrace_object;
+            }
+
+            // Create new geometry from server data
             EdObject trobj;
             try {
                 trobj = rec.createObject(editor);
@@ -277,16 +362,15 @@ public final class ZabagedModule extends TracerModule {
                 return null;
             }
 
-            // Shift = tags-only update: find existing object near click position
-            if (m_updateTagsOnly) {
-                // There is no meaningful retrace for ZABAGED (no stable ID), so just tag
-                // the closest existing object that the click landed on — handled by tagTracedObject
-                // called below. If we have no existing object, refuse.
-                postTraceNotifications().add(tr("ZABAGED tags-only update: use Shift+click on an existing object."));
-                return null;
+            // Transfer new geometry onto the existing object (or keep new object if none found)
+            if (retrace_object != null) {
+                RetraceUpdater retr = new RetraceUpdater(false, postTraceNotifications());
+                trobj = retr.updateRetracedObjects(trobj, retrace_object);
+                if (trobj == null)
+                    return null;
             }
 
-            // Tag the new object
+            // Tag the object
             if (!tagTracedObject(trobj, rec))
                 return null;
 
