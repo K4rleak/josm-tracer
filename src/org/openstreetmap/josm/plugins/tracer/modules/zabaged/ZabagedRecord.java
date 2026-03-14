@@ -531,6 +531,10 @@ public final class ZabagedRecord extends TracerRecord {
      */
     private static String getCleanAttr(Map<String, String> attrs, String key) {
         String val = attrs.get(key);
+        if (val == null)
+            val = attrs.get(key.toLowerCase());
+        if (val == null)
+            val = attrs.get(key.toUpperCase());
         if (val == null) return null;
         val = val.trim();
         if (val.isEmpty() || val.equalsIgnoreCase("null")) return null;
