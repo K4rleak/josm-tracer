@@ -315,7 +315,10 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put(e.getValue(), val);
         }
 
-        // 3. Per-layer attributes
+        // 3. Global references (applied to every feature that carries them)
+        applyGlobalRefs(attrs, tags);
+
+        // 4. Per-layer attributes
         applyLayerSpecificAttrs(f, attrs, tags);
     }
 
@@ -325,8 +328,29 @@ public final class ZabagedRecord extends TracerRecord {
         String name = getCleanAttr(attrs, "jmeno");
         if (name == null)
             name = getCleanAttr(attrs, "nazev");
+        if (name == null)
+            name = getCleanAttr(attrs, "nazev_ps");   // policejní služebna
+        if (name == null)
+            name = getCleanAttr(attrs, "nazev_czu");  // cizí zastupitelský úřad
         if (name != null)
             tags.put("name", name);
+    }
+
+    // --- global reference helper --------------------------------------------
+
+    /**
+     * Adds source-independent reference tags carried by many ZABAGED layers:
+     *   FID_ZBG  → ref:zabaged    (stable ZABAGED feature id)
+     *   ID_RUIAN → ref:ruian:addr (linked RÚIAN address point, POI layers only)
+     */
+    private static void applyGlobalRefs(Map<String, String> attrs, Map<String, String> tags) {
+        String fid = getCleanAttr(attrs, "fid_zbg");
+        if (fid != null)
+            tags.put("ref:zabaged", fid);
+
+        String ruian = normalizeIntAttr(getCleanAttr(attrs, "id_ruian"));
+        if (ruian != null)
+            tags.put("ref:ruian:addr", ruian);
     }
 
     // --- per-layer dispatcher -----------------------------------------------
@@ -350,8 +374,7 @@ public final class ZabagedRecord extends TracerRecord {
 
         switch (id) {
             // Roads
-            case 79: case 80: case 81: case 82: case 83:
-            case 84: case 85: case 86: case 87:
+            case 84:
                 applyRoadAttrs(attrs, tags);
                 break;
 
@@ -361,7 +384,7 @@ public final class ZabagedRecord extends TracerRecord {
                 break;
 
             // Waterways
-            case 93: case 94: case 95: case 96:
+            case 93:
                 applyWaterwayAttrs(attrs, tags);
                 break;
 
@@ -375,8 +398,56 @@ public final class ZabagedRecord extends TracerRecord {
                 applyBridgeAttrs(attrs, tags);
                 break;
 
-            case 149:
+            // Ovocný sad, zahrada
+            case 135:
                 applyGardenAttrs(attrs, tags);
+                break;
+            case 132:
+                applyWaterAttrs(attrs, tags);
+                break;
+            case 26:
+                applyTowerAttrs(attrs, tags);
+                break;
+
+            // --- POI definiční body (sync ze ZABAGEDu) ---
+            case 35:
+                applyFuelStationAttrs(attrs, tags);
+                break;
+            case 36:
+                applyMeteoAttrs(attrs, tags);
+                break;
+            case 43:
+                applyPoliceAttrs(attrs, tags);
+                break;
+            case 44:
+                applyFireStationAttrs(attrs, tags);
+                break;
+            case 45:
+                applyPublicAdminAttrs(attrs, tags);
+                break;
+            case 46:
+                applyPostAttrs(attrs, tags);
+                break;
+            case 47:
+                applySchoolAttrs(attrs, tags);
+                break;
+            case 48:
+                applySchoolFacilityAttrs(attrs, tags);
+                break;
+            case 49:
+                applySocialFacilityAttrs(attrs, tags);
+                break;
+            case 50:
+                applyHospitalAttrs(attrs, tags);
+                break;
+            case 51:
+                applyHealthcareAttrs(attrs, tags);
+                break;
+            case 146:
+                applyForeignMissionAttrs(attrs, tags);
+                break;
+            case 149:
+                applyChargingStationAttrs(attrs, tags);
                 break;
         }
     }
@@ -393,7 +464,41 @@ public final class ZabagedRecord extends TracerRecord {
 
     /** Roads (layers 79–87). */
     private static void applyRoadAttrs(Map<String, String> attrs, Map<String, String> tags) {
-        // cislo → ref  (road number)
+        // TYPULICE_K → highway type refinement
+        String typ = getCleanAttr(attrs, "TYPULICE_K");
+        if (typ != null) {
+            switch (typ.toUpperCase(Locale.ROOT)) {
+
+                case "025":   // ulice nesjízdná v sídle
+                    tags.put("highway", "road");
+                    tags.put("motor_vehicle", "no");
+                    break;
+
+                case "026":   // ulice sjízdná v sídle
+                    tags.put("highway", "residential");
+                    break;
+
+                case "926":   // ulice sjízdná mimo sídlo
+                    tags.put("highway", "unclassified");
+                    break;
+
+                case "925":   // ulice nesjízdná mimo sídlo
+                    tags.put("highway", "road");
+                    tags.put("motor_vehicle", "no");
+                    break;
+
+                case "125":   // ulice neexistující v terénu
+                    tags.put("fixme", "verify existence");
+                    break;
+
+                case "225":   // ulice typu chodník
+                    tags.put("highway", "footway");
+                    tags.put("footway", "sidewalk");
+                    break;
+            }
+        }
+
+        // cislo → ref (road number)
         String cislo = getCleanAttr(attrs, "cislo");
         if (cislo != null)
             tags.put("ref", cislo);
@@ -465,9 +570,60 @@ public final class ZabagedRecord extends TracerRecord {
     /** Waterways (layers 93–96). */
     private static void applyWaterwayAttrs(Map<String, String> attrs, Map<String, String> tags) {
         // sirka → width [m]
-        String sirka = normalizeNumericAttr(getCleanAttr(attrs, "sirka"));
-        if (sirka != null)
-            tags.put("width", sirka);
+        String vydatnost = getCleanAttr(attrs,"VYDATTOK_K"); 
+        if ("006".equals(vydatnost)) {
+            tags.put("intermittent", "yes");
+        }
+
+        String podzemi = getCleanAttr(attrs, "TYPTOKU_K");
+        if ("004".equals(podzemi)) {
+            tags.put("tunnel", "yes");
+        }
+}
+
+    private static void applyWaterAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String typ = getCleanAttr(attrs, "TYP_VP_K"); // ← ověř přesný název atributu
+        if (typ == null) return;
+        switch (typ.toUpperCase(Locale.ROOT)) {
+            case "1":   // přehradní nádrž
+                tags.put("natural", "water");
+                tags.put("water", "reservoir");
+                break;
+            case "2":   // rybník
+                tags.put("natural", "water");
+                tags.put("water", "pond");
+                break;
+            case "3":   // antropogenní jezero
+                tags.put("natural", "water");
+                tags.put("water", "pond"); 
+                // U zatopených lomů lze použít i water=quarry_pool, 
+                // ale lake je pro větší vodní plochy bezpečnější a běžnější.
+                break;
+            case "4":   // jezero přírodního původu
+                tags.put("natural", "water");
+                tags.put("water", "lake");
+                break;
+            case "5":   // výhonová tůně
+                tags.put("natural", "water");
+                tags.put("water", "stream_pool"); 
+                break;
+            case "6":   // koupaliště
+                tags.remove("natural"); 
+                tags.put("leisure", "swimming_pool");                // hodilo by se spíše leisure=swimming_pool (a bez natural=water).
+                break;
+            case "7":   // rybniční sádka
+                tags.put("natural", "water");
+                tags.put("water", "basin");
+                break;
+            case "8":   // sedimentační nádrž
+                tags.put("natural", "water");
+                tags.put("water", "wastewater");
+                break;
+            case "9":   // ostatní vodní plocha
+                tags.put("natural", "water");
+                // Bez specifikace water=*, protože nelze jednoznačně zařadit
+                break;
+        }
     }
 
     /** Power lines (layers 88–89). */
@@ -519,6 +675,277 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put("natural", "scrub");
                 tags.remove("leisure");
                 break;
+        }
+    }
+
+    private static void applyTowerAttrs(Map<String, String> attrs,
+            Map<String, String> tags) {
+        String height = normalizeNumericAttr(getCleanAttr(attrs, "VYSKA_OBJ"));
+        if (height != null)
+            tags.put("height", height);
+
+        String heightSource = mapHeightSource(getCleanAttr(attrs, "ZDROJVYS_K"));
+        if (heightSource != null)
+            tags.put("source:height", heightSource);
+
+        String typ = getCleanAttr(attrs, "PODTYPOB_K");
+        if (typ == null)
+            return;
+
+        switch (typ.toUpperCase(Locale.ROOT)) {
+            case "017":
+            case "018":
+                tags.put("building", "tower");
+                tags.put("tower:type", "bell_tower");
+                break;
+            case "091":
+                tags.put("tower:type", "observation");
+                tags.put("tourism", "viewpoint");
+                break;
+            case "092":
+                tags.put("tower:type", "communication");
+                break;
+            case "301":
+                tags.put("tower:type", "observation");
+                tags.put("tourism", "viewpoint");
+                tags.put("communication:radio", "yes");
+                break;
+        }
+    }
+
+    private static String mapHeightSource(String val) {
+        if (val == null) return null;
+        switch (val) {
+            case "1": return "VGHMÚř";
+            case "2": return "ČRa";
+            case "3": return "other";
+            default: return null;
+        }
+    }
+
+    // --- POI definiční body -------------------------------------------------
+
+    /** Čerpací stanice pohonných hmot (layer 35). Base amenity=fuel. */
+    private static void applyFuelStationAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String typ = getCleanAttr(attrs, "typcs_p");
+        if (typ == null) return;
+        String t = typ.toLowerCase(Locale.ROOT);
+        if (t.contains("cng"))
+            tags.put("fuel:cng", "yes");
+        if (t.contains("lng"))
+            tags.put("fuel:lng", "yes");
+        if (t.contains("lpg"))
+            tags.put("fuel:lpg", "yes");
+    }
+
+    /** Meteorologická stanice (layer 36). Base man_made=monitoring_station. */
+    private static void applyMeteoAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String provoz = getCleanAttr(attrs, "provoz");
+        if (provoz != null) {
+            String p = provoz.toLowerCase(Locale.ROOT);
+            if (p.contains("čhmú")) {
+                tags.put("operator", "Český hydrometeorologický ústav");
+                tags.put("operator:short", "ČHMÚ");
+                tags.put("operator:wikidata", "Q5201751");
+            } else if (p.contains("řsd")) {
+                tags.put("operator", "Ředitelství silnic a dálnic");
+                tags.put("operator:short", "ŘSD");
+                tags.put("operator:wikidata", "Q10513470");
+            } else if (p.contains("ačr") || p.contains("a čr")) {
+                tags.put("operator", "Armáda České republiky");
+                tags.put("operator:short", "A ČR");
+                tags.put("operator:wikidata", "Q276325");
+            }
+        }
+
+        String url = getCleanAttr(attrs, "url");
+        if (url != null)
+            tags.put("website", url);
+    }
+
+    /** Policejní služebna (layer 43). Base amenity=police; name handled globally. */
+    private static void applyPoliceAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        // No reliable OSM differentiation for typps_p; base tag is sufficient.
+    }
+
+    /** Hasičská stanice, zbrojnice (layer 44). Base amenity=fire_station. */
+    private static void applyFireStationAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        // typjpo_p (stanice vs. zbrojnice) has no distinct OSM tag; base tag is sufficient.
+    }
+
+    /** Úřad veřejné správy (layer 45). Base office=government. */
+    private static void applyPublicAdminAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String pravfor = getCleanAttr(attrs, "pravfor_p");
+        if (pravfor != null) {
+            String pf = pravfor.toLowerCase(Locale.ROOT);
+            if (pf.contains("městská část") || pf.contains("městské části")) {
+                tags.put("amenity", "townhall");
+                tags.put("townhall:type", "city");
+            } else if (pf.contains("obec")) {
+                tags.put("amenity", "townhall");
+            }
+        }
+
+        // Refine by recognised office name.
+        String nazev = getCleanAttr(attrs, "nazev");
+        if (nazev != null) {
+            String n = nazev.toLowerCase(Locale.ROOT);
+            if (n.contains("soud")) {
+                tags.put("amenity", "courthouse");
+                tags.remove("office");
+            } else if (n.contains("archiv")) {
+                tags.put("government", "archive");
+            } else if (n.contains("statistick")) {
+                tags.put("government", "statistics");
+            } else if (n.contains("finanční úřad")) {
+                tags.put("government", "tax");
+            } else if (n.contains("katastrální úřad")) {
+                tags.put("government", "cadaster");
+            }
+        }
+    }
+
+    /** Pošta (layer 46). Base amenity=post_office. */
+    private static void applyPostAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String psc = getCleanAttr(attrs, "psc");
+        if (psc != null)
+            tags.put("addr:postcode", psc);
+
+        String typ = getCleanAttr(attrs, "typposty_p");
+        if (typ != null && typ.toLowerCase(Locale.ROOT).contains("partner"))
+            tags.put("post_office", "post_partner");
+    }
+
+    /** Škola (layer 47). Base amenity=school, refined by level of education. */
+    private static void applySchoolAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String vzd = getCleanAttr(attrs, "vzdelani_p");
+        if (vzd == null) return;
+        String v = vzd.toLowerCase(Locale.ROOT);
+        if (v.contains("mateřsk")) {
+            tags.put("amenity", "kindergarten");
+        } else if (v.contains("vysoká škola")) {
+            tags.put("amenity", "university");
+        } else if (v.contains("vyšší odborná")) {
+            tags.put("amenity", "college");
+        } else {
+            tags.put("amenity", "school");
+        }
+    }
+
+    /** Školské zařízení (layer 48). Base amenity=social_facility. */
+    private static void applySchoolFacilityAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String vzd = getCleanAttr(attrs, "vzdelani_p");
+        if (vzd == null) return;
+        String v = vzd.toLowerCase(Locale.ROOT);
+        if (v.contains("dětský domov se školou")) {
+            tags.put("social_facility", "group_home");
+            tags.put("social_facility:for", "orphan");
+        } else if (v.contains("dětský domov")) {
+            tags.put("social_facility", "group_home");
+            tags.put("social_facility:for", "orphan");
+        } else if (v.contains("výchovný ústav")) {
+            tags.put("social_facility", "group_home");
+        }
+    }
+
+    /** Sociální zařízení (layer 49). Base amenity=social_facility. */
+    private static void applySocialFacilityAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String dr = getCleanAttr(attrs, "drsoza_p");
+        if (dr == null) return;
+        String d = dr.toLowerCase(Locale.ROOT);
+        if (d.contains("azylové domy")) {
+            tags.put("social_facility", "shelter");
+        } else if (d.contains("chráněné bydlení")) {
+            tags.put("social_facility", "assisted_living");
+        } else if (d.contains("domovy pro osoby se zdravotním postižením")) {
+            tags.put("social_facility", "nursing_home");
+        } else if (d.contains("domovy pro seniory")) {
+            tags.put("social_facility", "group_home");
+            tags.put("social_facility:for", "senior");
+        } else if (d.contains("denní") || d.contains("týdenní stacionáře")) {
+            tags.put("social_facility", "day_care");
+        }
+    }
+
+    /** Nemocnice (layer 50). Base amenity=hospital. */
+    private static void applyHospitalAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String dr = getCleanAttr(attrs, "drzar_p");
+        if (dr != null && dr.toLowerCase(Locale.ROOT).contains("psychiatrick"))
+            tags.put("healthcare:speciality", "psychiatry");
+    }
+
+    /** Zdravotnické zařízení (layer 51). Base healthcare=yes. */
+    private static void applyHealthcareAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String dr = getCleanAttr(attrs, "drzar_p");
+        if (dr == null) return;
+        String d = dr.toLowerCase(Locale.ROOT);
+        if (d.contains("centrum asistované reprodukce")) {
+            tags.put("amenity", "clinic");
+            tags.put("healthcare", "clinic");
+            tags.put("healthcare:speciality", "fertility");
+        } else if (d.contains("léčebna pro dlouhodobě nemocné")) {
+            tags.put("healthcare", "hospital");
+            tags.put("healthcare:speciality", "long_term_care");
+        } else if (d.contains("rehabilitační ústav")) {
+            tags.put("healthcare", "rehabilitation");
+        } else if (d.contains("hospic")) {
+            tags.put("healthcare", "hospice");
+        } else if (d.contains("psychiatrická léčebna")) {
+            tags.put("healthcare", "hospital");
+            tags.put("healthcare:speciality", "psychiatry");
+        }
+    }
+
+    /** Cizí zastupitelský úřad (layer 146). Base office=diplomatic. */
+    private static void applyForeignMissionAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String typ = getCleanAttr(attrs, "typczu_p");
+        if (typ == null) return;
+        String t = typ.toLowerCase(Locale.ROOT);
+        if (t.contains("konzulát")) {
+            tags.put("diplomatic", "consulate");
+        } else if (t.contains("velvyslanectví")) {
+            tags.put("diplomatic", "embassy");
+        } else if (t.contains("mezinárodní")) {
+            // úřadovna mezinárodní vládní organizace
+            tags.put("office", "government");
+            tags.remove("diplomatic");
+        }
+    }
+
+    /** Dobíjecí stanice (layer 149). Base amenity=charging_station. */
+    private static void applyChargingStationAttrs(Map<String, String> attrs, Map<String, String> tags) {
+        String capacity = normalizeIntAttr(getCleanAttr(attrs, "pocet_db"));
+        if (capacity != null)
+            tags.put("capacity", capacity);
+
+        String provoz = getCleanAttr(attrs, "provozovatel");
+        if (provoz == null) return;
+        String p = provoz.toLowerCase(Locale.ROOT);
+        if (p.contains("čez")) {
+            tags.put("operator", "ČEZ");
+            tags.put("operator:wikidata", "Q336735");
+            tags.put("name", "futurego");
+            tags.put("brand", "futurego");
+            tags.put("brand:wikidata", "Q127514998");
+        } else if (p.contains("pražská energetika") || p.equals("pre")) {
+            tags.put("operator", "Pražská energetika");
+            tags.put("operator:short", "PRE");
+            tags.put("operator:wikidata", "Q15870812");
+            tags.put("brand", "PREpoint");
+            tags.put("brand:wikidata", "Q136698307");
+        } else if (p.contains("e.on") || p.contains("eon")) {
+            tags.put("operator", "E.ON");
+            tags.put("operator:wikidata", "Q270223");
+            tags.put("brand", "E.ON Drive");
+            tags.put("brand:wikidata", "Q126650419");
+        } else if (p.contains("lidl")) {
+            tags.put("operator", "Lidl");
+            tags.put("operator:wikidata", "Q151954");
+        } else if (p.contains("innogy")) {
+            tags.put("operator", "Innogy");
+            tags.put("operator:wikidata", "Q2124721");
+        } else {
+            tags.put("operator", provoz);
         }
     }
 
@@ -907,7 +1334,8 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put("amenity", "fuel");
                 return true;
             case 36:
-                tags.put("man_made", "weather_station");
+                tags.put("man_made", "monitoring_station");
+                tags.put("monitoring:weather", "yes");
                 return true;
 
             // ---- Barriers / fences / walls ----
@@ -947,8 +1375,7 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put("amenity", "school");
                 return true;
             case 48:
-                tags.put("amenity", "school");
-                tags.put("school:facility", "*");
+                tags.put("amenity", "social_facility");
                 return true;
             case 49:
                 tags.put("amenity", "social_facility");
@@ -957,7 +1384,7 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put("amenity", "hospital");
                 return true;
             case 51:
-                tags.put("amenity", "clinic");
+                tags.put("healthcare", "yes");
                 return true;
             case 52:
                 tags.put("amenity", "pharmacy");
@@ -1036,13 +1463,13 @@ public final class ZabagedRecord extends TracerRecord {
 
             // ---- Transport — roads ----
             case 79:
-                tags.put("highway", "road");
-                return true;
-            case 80:
                 tags.put("highway", "motorway");
                 return true;
+            case 80:
+                tags.put("highway", "road");
+                return true;
             case 81:
-                tags.put("highway", "primary");
+                tags.put("highway", "construction");
                 return true;
             case 82:
                 tags.put("highway", "path");
@@ -1051,7 +1478,7 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put("highway", "track");
                 return true;
             case 84:
-                tags.put("highway", "unclassified");
+                tags.put("highway", "residential");
                 return true;
             case 85:
                 tags.put("highway", "residential");
@@ -1255,13 +1682,17 @@ public final class ZabagedRecord extends TracerRecord {
                 tags.put("leisure", "garden");
                 return true;
             case 146:
-                tags.put("leisure", "golf_course");
+                tags.put("office", "diplomatic");
                 return true;
             case 147:
-                tags.put("leisure", "track");
+                tags.put("boundary", "protected_area");
+                tags.put("protect_class", "97");
+                tags.put("protection_title", "Evropsky významná lokalita");
                 return true;
             case 148:
-                tags.put("leisure", "pitch");
+                tags.put("boundary", "protected_area");
+                tags.put("protect_class", "97");
+                tags.put("protection_title", "Ptačí oblast");
                 return true;
             case 149:
                 tags.put("amenity", "charging_station");
